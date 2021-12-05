@@ -60,16 +60,16 @@ public class TicketingDS implements TicketingSystem {
         List<Set<Seat>> empty_seat_list = getRoute(route);
         List<ReentrantReadWriteLock> route_lock = lock_list.get(route);
 
-        route_lock.get(departure).readLock().lock();
+//        route_lock.get(departure).readLock().lock();
         Set<Seat> empty_seat = new TreeSet<>(empty_seat_list.get(departure));
-        route_lock.get(departure).readLock().unlock();
+//        route_lock.get(departure).readLock().unlock();
 
         for (int i = departure + 1; !empty_seat.isEmpty() && i < arrival; i++) {
-            Lock rl = route_lock.get(i).readLock();
+//            Lock rl = route_lock.get(i).readLock();
 
-            rl.lock();
+//            rl.lock();
             empty_seat.retainAll(empty_seat_list.get(i));
-            rl.unlock();
+//            rl.unlock();
         }
         return empty_seat;
     }
@@ -91,7 +91,11 @@ public class TicketingDS implements TicketingSystem {
             Lock wl = route_lock.get(station).writeLock();
 
             wl.lock();
-            success = station_empty_seats.get(station).remove(my_seat);
+            Set<Seat> new_empty = new HashSet<>(station_empty_seats.get(station));
+            success = new_empty.remove(my_seat);
+            if (success) {
+                station_empty_seats.set(station, new_empty);
+            }
             wl.unlock();
 
             station += 1;
@@ -102,7 +106,9 @@ public class TicketingDS implements TicketingSystem {
                 Lock wl = route_lock.get(i).writeLock();
 
                 wl.lock();
-                station_empty_seats.get(i).add(my_seat);
+                Set<Seat> new_empty = new HashSet<>(station_empty_seats.get(station));
+                new_empty.add(my_seat);
+                station_empty_seats.set(i, new_empty);
                 wl.unlock();
             }
             return buyTicket(passenger, route, departure, arrival);
@@ -170,9 +176,10 @@ public class TicketingDS implements TicketingSystem {
         List<ReentrantReadWriteLock> route_lock = lock_list.get(sys_ticket.route);
         for (int station = sys_ticket.departure; station < sys_ticket.arrival; station++) {
             Lock rl = route_lock.get(station).writeLock();
-
             rl.lock();
-            station_seat.get(station).add(seat);
+            Set<Seat> new_empty = new HashSet<>(station_seat.get(station));
+            new_empty.add(seat);
+            station_seat.set(station, new_empty);
             rl.unlock();
         }
 
