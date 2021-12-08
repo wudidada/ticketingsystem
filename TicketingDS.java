@@ -3,49 +3,39 @@ package ticketingsystem;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class TicketingDS implements TicketingSystem {
 
     AtomicLong current_tid = new AtomicLong(0);
-    
+
     List<List<Set<Seat>>> empty_seat_list;
 
-    List<List<ReentrantReadWriteLock>> lock_list;
-    
-    Map<Long, Ticket> tid_ticket_map = new HashMap<>();
-    
-    Map<Long, Seat> tid_seat_map = new ConcurrentHashMap<>();
+    Map<Long, Ticket> tid_ticket_map = new ConcurrentHashMap<>();
 
-    final ReentrantReadWriteLock ticket_lock = new ReentrantReadWriteLock();
+    Map<Long, Seat> tid_seat_map = new ConcurrentHashMap<>();
 
     public TicketingDS(int routenum, int coachnum, int seatnum, int stationnum, int threadnum) {
         List<List<Set<Seat>>> empty_seat_route = new ArrayList<>();
-        List<List<ReentrantReadWriteLock>> lock_route = new ArrayList<>();
         empty_seat_route.add(null);
-        lock_route.add(null);
+
+        List<Seat> seats = new ArrayList<>();
+        for (int coach = 1; coach <= coachnum; coach++) {
+            for (int seat = 1; seat <= seatnum; seat++) {
+                seats.add(new Seat(coach, seat));
+            }
+        }
+
         for (int route = 1; route <= routenum; route++) {
             List<Set<Seat>> empty_seat_station = new ArrayList<>();
-            List<ReentrantReadWriteLock> lock_station = new ArrayList<>();
             empty_seat_station.add(null);
-            lock_station.add(null);
             for (int station = 1; station <= stationnum; station++) {
-                Set<Seat> empty_seat = new HashSet<>();
-                for (int coach = 1; coach <= coachnum; coach++) {
-                    for (int seat = 1; seat <= seatnum; seat++) {
-                        empty_seat.add(new Seat(coach, seat));
-                    }
-                }
+                Set<Seat> empty_seat = ConcurrentHashMap.newKeySet();
+                empty_seat.addAll(seats);
                 empty_seat_station.add(empty_seat);
-                lock_station.add(new ReentrantReadWriteLock());
             }
             empty_seat_route.add(empty_seat_station);
-            lock_route.add(lock_station);
         }
         this.empty_seat_list = empty_seat_route;
-        this.lock_list = lock_route;
     }
 
     private List<Set<Seat>> getRoute(int route) {
@@ -58,18 +48,9 @@ public class TicketingDS implements TicketingSystem {
 
     private Set<Seat> get_empty_seat(int route, int departure, int arrival) {
         List<Set<Seat>> empty_seat_list = getRoute(route);
-        List<ReentrantReadWriteLock> route_lock = lock_list.get(route);
-
-//        route_lock.get(departure).readLock().lock();
         Set<Seat> empty_seat = new TreeSet<>(empty_seat_list.get(departure));
-//        route_lock.get(departure).readLock().unlock();
-
         for (int i = departure + 1; !empty_seat.isEmpty() && i < arrival; i++) {
-//            Lock rl = route_lock.get(i).readLock();
-
-//            rl.lock();
             empty_seat.retainAll(empty_seat_list.get(i));
-//            rl.unlock();
         }
         return empty_seat;
     }
@@ -82,34 +63,17 @@ public class TicketingDS implements TicketingSystem {
         Seat my_seat = ((TreeSet<Seat>) empty_seat).first();
 
         List<Set<Seat>> station_empty_seats = getRoute(route);
-        List<ReentrantReadWriteLock> route_lock = lock_list.get(route);
-
         int station = departure;
         boolean success = true;
 
         while (station < arrival && success) {
-            Lock wl = route_lock.get(station).writeLock();
-
-            wl.lock();
-            Set<Seat> new_empty = new HashSet<>(station_empty_seats.get(station));
-            success = new_empty.remove(my_seat);
-            if (success) {
-                station_empty_seats.set(station, new_empty);
-            }
-            wl.unlock();
-
+            success = station_empty_seats.get(station).remove(my_seat);
             station += 1;
         }
 
         if (!success) {
             for(int i = departure; i < station; i++) {
-                Lock wl = route_lock.get(i).writeLock();
-
-                wl.lock();
-                Set<Seat> new_empty = new HashSet<>(station_empty_seats.get(station));
-                new_empty.add(my_seat);
-                station_empty_seats.set(i, new_empty);
-                wl.unlock();
+                station_empty_seats.get(i).add(my_seat);
             }
             return buyTicket(passenger, route, departure, arrival);
         }
@@ -124,10 +88,7 @@ public class TicketingDS implements TicketingSystem {
         ticket.passenger = passenger;
         ticket.route = route;
 
-        ticket_lock.writeLock().lock();
         tid_ticket_map.put(tid, ticket);
-        ticket_lock.writeLock().unlock();
-
         tid_seat_map.put(tid, my_seat);
 
         return ticket;
@@ -149,9 +110,7 @@ public class TicketingDS implements TicketingSystem {
     }
 
     public boolean refundTicket(Ticket ticket) {
-        ticket_lock.readLock().lock();
         Ticket sys_ticket = tid_ticket_map.get(ticket.tid);
-        ticket_lock.readLock().unlock();
 
         if (sys_ticket == null) {
             return false;
@@ -161,26 +120,16 @@ public class TicketingDS implements TicketingSystem {
             return false;
         }
 
-        ticket_lock.writeLock().lock();
-        if (tid_ticket_map.get(sys_ticket.tid) == null) {
-            ticket_lock.writeLock().unlock();
+        Ticket removed_ticket = tid_ticket_map.remove(sys_ticket.tid);
+        if (removed_ticket == null) {
             return false;
         }
-
-        tid_ticket_map.remove(sys_ticket.tid);
-        ticket_lock.writeLock().unlock();
 
         Seat seat = tid_seat_map.remove(sys_ticket.tid);
 
         List<Set<Seat>> station_seat = getRoute(sys_ticket.route);
-        List<ReentrantReadWriteLock> route_lock = lock_list.get(sys_ticket.route);
         for (int station = sys_ticket.departure; station < sys_ticket.arrival; station++) {
-            Lock rl = route_lock.get(station).writeLock();
-            rl.lock();
-            Set<Seat> new_empty = new HashSet<>(station_seat.get(station));
-            new_empty.add(seat);
-            station_seat.set(station, new_empty);
-            rl.unlock();
+            station_seat.get(station).add(seat);
         }
 
         return true;
@@ -188,10 +137,18 @@ public class TicketingDS implements TicketingSystem {
 
     public static void main(String[] args) {
         Set<Seat> s = new HashSet<>();
-        System.out.println(s.hashCode());
+        s.add(new Seat(1,1));
+        s.add(new Seat(1,2));
+        s.add(new Seat(1,3));
+        s.add(new Seat(2,1));
+        s.add(new Seat(2,2));
+        s.add(new Seat(2,3));
+        s.add(new Seat(3,1));
+        s.add(new Seat(3,2));
+        s.add(new Seat(3,3));
 
-        s.add(new Seat(1, 2));
-        System.out.println(s.hashCode());
+        Set<Seat> t = new TreeSet<>(s);
+        System.out.printf("" + t.size());
 
     }
 }
